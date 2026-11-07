@@ -10,7 +10,10 @@ import time
 import numpy as np
 
 startTime = time.time()
-n = 10000  # Number of units
+clusterNum = 1000 # number of fine clusters (total)
+clusterNumBig = 100 # number of coarse clusters (total) ; number of fine clusters per coarse cluster is clusterNum / clusterNumBig
+clusterSize = 10 # number of units per fine cluster ; number of units per coarse cluster is (clusterNum / clusterNumBig) * clusterSize
+n = clusterNum*clusterSize
 
 # Parameters
 betas = [2, 3]  # Polynomial degrees for outcome model
@@ -67,23 +70,21 @@ Bias_dict = {b: {q:[] for q in qs} for b in betas}
 E_given_U_dict = {b: {q:[] for q in qs} for b in betas}
 
 # Construct the network
-clusterNum = 1000 # number of fine clusters (total)
-clusterNumBig = 100 # number of coarse clusters (total) ; number of fine clusters per coarse cluster is clusterNum / clusterNumBig
-clusterSize = 10 # number of units per fine cluster ; number of units per coarse cluster is (clusterNum / clusterNumBig) * clusterSize
-
 p_cross = 0 # probability of edge between two units of different coarse clusters
 p_out = 0.01 # probability of edge between two units of different fine clusters but same coarse cluster
 p_in = 0.5 # probability of edge between two units of same fine cluster in same coarse cluster
 
 probs = sbm_2level_prob_matrix(p_in, p_out, p_cross, clusterNum, clusterNumBig)
 A = SBM(clusterSize, probs, self_loops = True)
-
-G = [A[[i],:].nonzero()[1] for i in range(n)] # adjacency list
 h = homophily_effects(A)
-clusterings = {"none":[]} # Initialize clustering dictionary
+# G = [A[[i],:].nonzero()[1] for i in range(n)] # adjacency list
 
 # Define the clustering
-Cl = 0 # PLACEHOLDER
+Cl = []
+add = 0
+for k in range(clusterNum):
+    Cl.append(list(range(k+add,k+add+clusterSize)))
+    add+=clusterSize-1
 
 # Run experiments for different beta values
 for beta in betas:
