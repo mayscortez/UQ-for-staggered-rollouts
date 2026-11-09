@@ -10,30 +10,24 @@ import time
 import numpy as np
 
 startTime = time.time()
+rng = np.random.default_rng(2727)
+
+# Graph parameters
 clusterNum = 1000 # number of fine clusters (total)
 clusterNumBig = 100 # number of coarse clusters (total) ; number of fine clusters per coarse cluster is clusterNum / clusterNumBig
-clusterSize = 10 # number of units per fine cluster ; number of units per coarse cluster is (clusterNum / clusterNumBig) * clusterSize
-n = clusterNum*clusterSize
+clusterSize = 10 # number of units per fine cluster 
+clusterSizeBig = (clusterNum // clusterNumBig) * clusterSize # number of units per coarse cluster
+n = clusterNum*clusterSize # total population size
 
 # Parameters
-betas = [2, 3]  # Polynomial degrees for outcome model
+beta = 2  # Polynomial degree for outcome model
 p = 0.125  # Treatment budget proportion
 
-# Define values of nu (subset sizes) and q (treatment probabilities)
-nus = np.linspace(int(n * p), n, 15, dtype=int)
-qs = np.divide((n * p), nus)
-
-r = 1000  # Number of replications
-
-# Stage 1 assignment designs and clustering strategies
-stage1_design = 'complete'  # Available assignment designs for stage 1; other options are ['bernoulli','complete'] or ['bernoulli']
-cluster_strategy = "p_cross_NONE"  # Different clustering strategies for treatment assignment; all possible strategies are ["p_cross_NONE", "p_cross_SMALL"] 
-
+r = 1  # Number of randomized design replications 
+r_graph = 1 # Number of graphs we sample over
+r_bootstrap = 10
+alpha = 0.05 # 1-alpha confidence level, e.g. alpha = 0.05 means we're constructing 95% confidence intervals
 ##############################################
-
-# Initialize dictionary to store results
-data = {"beta":[], "q":[], "bias":[], "var":[], "var_s":[]}
-
 def pi_estimate_tte_two_stage_complete(Y, nu, k):
     '''
     Computes TTE estimate from polynomial interpolation.
@@ -42,12 +36,12 @@ def pi_estimate_tte_two_stage_complete(Y, nu, k):
     :param k: Treatment budget (in units)
     :return: Estimated treatment effect
     '''
-    n = Y.shape[-1]
     H = complete_coeffs(beta, nu, k)  # Compute polynomial coefficients
     return 1 / nu * H @ np.sum(Y, axis=-1)
 
 # Function to estimate TTE in a two-stage experiment
-def estimate_two_stage(fY,Cl,r,nu,K,cl_design):
+# TODO: e_tte_hat_given_u possibly unused downstream, consider deleting
+def estimate_two_stage(fY,Cl,r,nu,K):
     tte_hat = []
     e_tte_hat_given_u = []
 
@@ -61,57 +55,116 @@ def estimate_two_stage(fY,Cl,r,nu,K,cl_design):
     # Compute conditional expectations
     e_tte_hat_given_u = np.append(e_tte_hat_given_u, (1/nu)*np.sum(fY(U) - fY(np.zeros(n)),axis=1))
 
-    return (nu, tte_hat, e_tte_hat_given_u)
+    return (nu, tte_hat, e_tte_hat_given_u, Y)
 
-# Initialize nested dictionaries for storing results
-# e.g. Bias_dict[b][q] constains a list of the biases of the two-stage estimator under a model with degree b, treatment probability q
-TTE_hat_dict = {b: {q:[] for q in qs} for b in betas}
-Bias_dict = {b: {q:[] for q in qs} for b in betas}
-E_given_U_dict = {b: {q:[] for q in qs} for b in betas}
+def estimate_two_stage_clusters(Y,Cl,q):
+    tte_hat = []
+    nu = int(clusterSizeBig * p / q) # recomputed since treating single coarse cluster as entire population # TODO: should we use the realized value instead?
 
-# Construct the network
+    # Get the outcomes Y only from units in Cl; Y shape = (beta+1, r, n)
+    Y_cl = Y[:,:,Cl]
+
+    # Compute TTE estimates
+    tte_hat = np.append(tte_hat,pi_estimate_tte_two_stage_complete(Y_cl,nu,int(clusterSizeBig*p)))
+
+    return tte_hat
+
+# Network edge probabilities
 p_cross = 0 # probability of edge between two units of different coarse clusters
 p_out = 0.01 # probability of edge between two units of different fine clusters but same coarse cluster
 p_in = 0.5 # probability of edge between two units of same fine cluster in same coarse cluster
-
 probs = sbm_2level_prob_matrix(p_in, p_out, p_cross, clusterNum, clusterNumBig)
-A = SBM(clusterSize, probs, self_loops = True)
-h = homophily_effects(A)
-# G = [A[[i],:].nonzero()[1] for i in range(n)] # adjacency list
 
-# Define the clustering
-Cl = []
+# Parameters with respect to the whole population of size n (used to get first point estimates (PE1))
+nus = np.linspace(int(n * p), n, 15, dtype=int) # values of subset U sizes
+qs = np.divide((n * p), nus) # stage 2 treatment probabilities 
+
+# Define the FINE clustering 
+Cl_fine = []
 add = 0
 for k in range(clusterNum):
-    Cl.append(list(range(k+add,k+add+clusterSize)))
+    Cl_fine.append(list(range(k+add,k+add+clusterSize)))
     add+=clusterSize-1
 
-# Run experiments for different beta values
-for beta in betas:
-    print("\nbeta={}".format(beta))
+# Define the COARSE clustering
+Cl_coarse = []
+add = 0
+for k in range(clusterNumBig):
+    Cl_coarse.append(list(range(k+add,k+add+clusterSizeBig)))
+    add+=clusterSizeBig-1
+
+# Initliaizing dictionaries that hold the results
+TTE_true_list = {rep: 0 for rep in range(r_graph)}
+
+# e.g. TTE_hat_dict[rep][q] holds a tte estimate (PE1) for graph repetition rep and stage-2 treatment probability q
+TTE_hat_dict = {rep: {q:[] for q in qs} for rep in range(r_graph)} # PE1
+Bias_dict = {rep: {q:[] for q in qs} for rep in range(r_graph)} # Bias of PE1
+
+# e.g. TTE_hat_dict_Cl[rep][q][c] holds a list of tte estimates on each coarse cluster for a graph repetition rep and stage-2 treatment probability q
+TTE_hat_dict_Cl = {rep: {q:[] for q in qs} for rep in range(r_graph)}# PE2
+Bias_dict_Cl = {rep: {q:[] for q in qs} for rep in range(r_graph)} # PE2 biases
+
+# Bootstrapping results for each graph repetitiion rep and value of q
+bootstrap_res = {rep: {q: {key: 0 for key in ["var", "LB", "UB", "pe2"]} for q in qs} for rep in range(r_graph)}
+coverage = {rep: {q: False for q in qs} for rep in range(r_graph)}
+
+for rep in range(r_graph):
+    A = SBM(clusterSize, probs, self_loops = True)
+    h = homophily_effects(A)
+    # G = [A[[i],:].nonzero()[1] for i in range(n)] # adjacency list
 
     K = np.linspace(0,int(n*p),beta+1,dtype=int)
     fY = pom_ugander_yin(A,h,beta)
     TTE_true = np.sum(fY(np.ones(n))-fY(np.zeros(n)))/n
+    TTE_true_list[rep] = TTE_true
 
-    for (nu,TTE_hat,E_given_U) in Parallel(n_jobs=-2, verbose=5)(delayed(lambda nu : estimate_two_stage(fY,Cl,r,nu,K,stage1_design))(nu) for nu in nus):
+    var_cluster_avgs, effect_of_cut_edges = clustering_metrics(n, Cl_fine, fY) # AISTATS clustering metrics
+
+    for (nu,TTE_hat,E_given_U,Y) in Parallel(n_jobs=-2, verbose=5)(delayed(lambda nu : estimate_two_stage(fY,Cl_fine,r,nu,K))(nu) for nu in nus): # type: ignore[misc]
         q = (n*p)/nu
-        Bias_dict[beta][q].append(TTE_hat - TTE_true)
-        TTE_hat_dict[beta][q].append(TTE_hat)
-        E_given_U_dict[beta][q].append(E_given_U)
-        var_cluster_avgs, effect_of_cut_edges = clustering_metrics(n, Cl, fY)
+        TTE_hat_dict[rep][q].append(TTE_hat) # list of PE1 for a given q
+        Bias_dict[rep][q].append(TTE_hat - TTE_true) # list of biases in estimating PE1 for a given q
 
-# save the data
-for beta in betas:
+        # Estimating TTE on each coarse cluster
+        coarse_estimates = [estimate_two_stage_clusters(Y,Cl,q) for Cl in Cl_coarse]
+        TTE_hat_dict_Cl[rep][q] = coarse_estimates
+        Bias_dict_Cl[rep][q] = coarse_estimates-TTE_true
+
+        # Create empirical distribution based on coarse cluster estimates to get variance estimate and confidence intervals
+        # References: https://faculty.washington.edu/yenchic/19A_stat535/Lec10_bootstrap.pdf and https://www2.stat.duke.edu/~banks/111-lectures.dir/lect13.pdf
+        # TODO: vectorize the bootstrap loop
+        empirical_dist = []
+        for i in range(r_bootstrap):
+            sample = rng.choice(coarse_estimates, size=len(coarse_estimates), replace=True) # sample coarse cluster estimates with replacement
+            empirical_dist.append(np.mean(sample)) # the average of these cluster-level estimates is a point on our empirical distribution
+
+        LB = np.percentile(empirical_dist, 100*alpha/2) # lower bound for (1-alpha)*100 confidence interval 
+        UB = np.percentile(empirical_dist, 100*(1-(alpha/2))) # upper bound for (1-alpha)*100 confidence interval
+
+        bootstrap_res[rep][q]["var"] = np.var(empirical_dist, ddof=1) # use sample variance of empirical distribution as our variance estimate # type: ignore[misc]
+        bootstrap_res[rep][q]["LB"] = LB # type: ignore[misc]
+        bootstrap_res[rep][q]["UB"] = UB # type: ignore[misc]
+        bootstrap_res[rep][q]["pe2"] = (UB + LB)/2 # point estimate 2, center of confidence interval # type: ignore[misc]
+
+        coverage[rep][q] = (LB <= TTE_true) and (TTE_true <= UB) # is the true TTE contained in the confidence interval?
+
+for rep in range(r_graph):
+    print(f"rep = {rep}")
     for nu in nus:
         q = (n*p)/nu
-        data["q"].append(q)
-        data["beta"].append(beta)
-        data["bias"].append(np.average(Bias_dict[beta][q]))
-        data["var"].append(np.var(TTE_hat_dict[beta][q]))
-        data["var_s"].append(np.var(E_given_U_dict[beta][q]))
+        print(f"nu = {nu}, coverage = {coverage[rep][q]}: TTE = {round(TTE_true_list[rep],4)} is in [{round(bootstrap_res[rep][q]["LB"],5)},{round(bootstrap_res[rep][q]["UB"],5)}]")
+        # print(f"TTE_hat_dict length: {len(TTE_hat_dict[rep][q])}")
+        # print(f"TTE_hat_dict_Cl length: {len(TTE_hat_dict_Cl[rep][q])}")
+        # print(f"bootstrap_res number of keys: {len(bootstrap_res[rep][q])}")
+    print()
 
-file = open("basic.pkl", "wb")
+data = {"pe1_TTE_hat": TTE_hat_dict,
+        "pe1_bias": Bias_dict,
+        "cluster_TTE_hat": TTE_hat_dict_Cl,
+        "cluster_bias": Bias_dict_Cl,
+        "bootstrap_res": bootstrap_res,
+        "coverage": coverage}
+file = open("data.pkl", "wb")
 pickle.dump((data), file)
 file.close()
 
