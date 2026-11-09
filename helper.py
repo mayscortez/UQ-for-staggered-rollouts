@@ -5,6 +5,7 @@ from numpy.random import RandomState
 from scipy.special import binom
 import scipy.sparse.linalg
 
+# TODO: just use one random generator?
 rng = RandomState(2727)
 rng_new = np.random.default_rng(2727)
 
@@ -21,7 +22,7 @@ def SBM(clusterSize, probabilities, self_loops = True):
     '''
     p = np.kron(probabilities, np.ones((clusterSize,clusterSize))) # create an n by n probability matrix
     n = p.shape[0]
-    A = np.random.rand(n,n)
+    A = rng_new.random(size=(n,n))
     A = (A < p) + 0
     if self_loops:
         A[range(n),range(n)] = 1   # set diagonal = 1: everyone is connected to itself and affected by their own treatment
@@ -155,7 +156,7 @@ def homophily_effects(G):
     normalized_laplacian = (-G/degrees).tocsr()
     normalized_laplacian[range(n),range(n)] = 1
 
-    _, eigvecs_s = scipy.sparse.linalg.eigs(normalized_laplacian,k=2,which='SM')
+    _, eigvecs_s = scipy.sparse.linalg.eigs(normalized_laplacian,k=2,which='SM') # type: ignore[misc]
 
     h = eigvecs_s[:,1].real
 
