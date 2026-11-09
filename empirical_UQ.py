@@ -57,9 +57,10 @@ def estimate_two_stage(fY,Cl,r,nu,K):
 
     return (nu, tte_hat, e_tte_hat_given_u, Y)
 
+# TODO: check logic for this function that computes TTE estimates on a single coarse cluster
 def estimate_two_stage_clusters(Y,Cl,q):
     tte_hat = []
-    nu = int(clusterSizeBig * p / q) # recomputed since treating single coarse cluster as entire population # TODO: should we use the realized value instead?
+    nu = int(clusterSizeBig * p / q) # recomputed # TODO: should we use the realized value instead? or original value?
 
     # Get the outcomes Y only from units in Cl; Y shape = (beta+1, r, n)
     Y_cl = Y[:,:,Cl]
@@ -117,8 +118,6 @@ for rep in range(r_graph):
     fY = pom_ugander_yin(A,h,beta)
     TTE_true = np.sum(fY(np.ones(n))-fY(np.zeros(n)))/n
     TTE_true_list[rep] = TTE_true
-
-    var_cluster_avgs, effect_of_cut_edges = clustering_metrics(n, Cl_fine, fY) # AISTATS clustering metrics
 
     for (nu,TTE_hat,E_given_U,Y) in Parallel(n_jobs=-2, verbose=5)(delayed(lambda nu : estimate_two_stage(fY,Cl_fine,r,nu,K))(nu) for nu in nus): # type: ignore[misc]
         q = (n*p)/nu
