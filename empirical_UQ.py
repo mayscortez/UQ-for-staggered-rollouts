@@ -24,8 +24,8 @@ beta = 2  # Polynomial degree for outcome model
 p = 0.125  # Treatment budget proportion
 
 r = 1  # Number of randomized design replications 
-r_graph = 1 # Number of graphs we sample over
-r_bootstrap = 10
+r_graph = 10 # Number of graphs we sample over
+r_bootstrap = 1000 # Number of bootstraps
 alpha = 0.05 # 1-alpha confidence level, e.g. alpha = 0.05 means we're constructing 95% confidence intervals
 ##############################################
 def pi_estimate_tte_two_stage_complete(Y, nu, k):
@@ -74,7 +74,7 @@ def estimate_two_stage_clusters(Y,Cl,q):
 p_cross = 0 # probability of edge between two units of different coarse clusters
 p_out = 0.01 # probability of edge between two units of different fine clusters but same coarse cluster
 p_in = 0.5 # probability of edge between two units of same fine cluster in same coarse cluster
-probs = sbm_2level_prob_matrix(p_in, p_out, p_cross, clusterNum, clusterNumBig)
+probs = sbm_2level_prob_matrix(p_in, p_out, p_cross, clusterNum, clusterNumBig) # create the edge probability matrix
 
 # Parameters with respect to the whole population of size n (used to get first point estimates (PE1))
 nus = np.linspace(int(n * p), n, 15, dtype=int) # values of subset U sizes
@@ -102,17 +102,18 @@ TTE_hat_dict = {rep: {q:[] for q in qs} for rep in range(r_graph)} # PE1
 Bias_dict = {rep: {q:[] for q in qs} for rep in range(r_graph)} # Bias of PE1
 
 # e.g. TTE_hat_dict_Cl[rep][q][c] holds a list of tte estimates on each coarse cluster for a graph repetition rep and stage-2 treatment probability q
-TTE_hat_dict_Cl = {rep: {q:[] for q in qs} for rep in range(r_graph)}# PE2
+TTE_hat_dict_Cl = {rep: {q:[] for q in qs} for rep in range(r_graph)} # PE2
 Bias_dict_Cl = {rep: {q:[] for q in qs} for rep in range(r_graph)} # PE2 biases
 
 # Bootstrapping results for each graph repetitiion rep and value of q
-bootstrap_res = {rep: {q: {key: 0 for key in ["var", "LB", "UB", "pe2"]} for q in qs} for rep in range(r_graph)}
-coverage = {rep: {q: False for q in qs} for rep in range(r_graph)}
+bootstrap_res1 = {rep: {q: {key: 0 for key in ["ed", "var", "LB", "UB", "pe2"]} for q in qs} for rep in range(r_graph)}
+bootstrap_res2 = {rep: {q: {key: 0 for key in ["ed", "var", "LB", "UB", "pe2"]} for q in qs} for rep in range(r_graph)}
+coverage1 = {rep: {q: False for q in qs} for rep in range(r_graph)}
+coverage2 = {rep: {q: False for q in qs} for rep in range(r_graph)}
 
 for rep in range(r_graph):
     A = SBM(clusterSize, probs, self_loops = True)
-    h = homophily_effects(A)
-    # G = [A[[i],:].nonzero()[1] for i in range(n)] # adjacency list
+    h = homophily_effects(A, numComponents=clusterNumBig)
 
     K = np.linspace(0,int(n*p),beta+1,dtype=int)
     fY = pom_ugander_yin(A,h,beta)
@@ -129,40 +130,50 @@ for rep in range(r_graph):
         TTE_hat_dict_Cl[rep][q] = coarse_estimates
         Bias_dict_Cl[rep][q] = coarse_estimates-TTE_true
 
+        # EMPIRICAL BOOTSTRAP (version where we sample from coarse estimates)
         # Create empirical distribution based on coarse cluster estimates to get variance estimate and confidence intervals
         # References: https://faculty.washington.edu/yenchic/19A_stat535/Lec10_bootstrap.pdf and https://www2.stat.duke.edu/~banks/111-lectures.dir/lect13.pdf
-        # TODO: vectorize the bootstrap loop
-        empirical_dist = []
-        for i in range(r_bootstrap):
-            sample = rng.choice(coarse_estimates, size=len(coarse_estimates), replace=True) # sample coarse cluster estimates with replacement
-            empirical_dist.append(np.mean(sample)) # the average of these cluster-level estimates is a point on our empirical distribution
+        sample = rng.choice(coarse_estimates, size=(len(coarse_estimates), r_bootstrap), replace=True) # sample coarse cluster estimates with replacement
+        empirical_dist = np.mean(sample, axis = 1) # the average of these cluster-level estimates is a point on our empirical distribution
 
         LB = np.percentile(empirical_dist, 100*alpha/2) # lower bound for (1-alpha)*100 confidence interval 
         UB = np.percentile(empirical_dist, 100*(1-(alpha/2))) # upper bound for (1-alpha)*100 confidence interval
 
-        bootstrap_res[rep][q]["var"] = np.var(empirical_dist, ddof=1) # use sample variance of empirical distribution as our variance estimate # type: ignore[misc]
-        bootstrap_res[rep][q]["LB"] = LB # type: ignore[misc]
-        bootstrap_res[rep][q]["UB"] = UB # type: ignore[misc]
-        bootstrap_res[rep][q]["pe2"] = (UB + LB)/2 # point estimate 2, center of confidence interval # type: ignore[misc]
+        bootstrap_res1[rep][q]["ed"] = empirical_dist # for plotting later
+        bootstrap_res1[rep][q]["var"] = np.var(empirical_dist, ddof=1) # use sample variance of empirical distribution as our variance estimate # type: ignore[misc]
+        bootstrap_res1[rep][q]["LB"] = LB # type: ignore[misc]
+        bootstrap_res1[rep][q]["UB"] = UB # type: ignore[misc]
+        bootstrap_res1[rep][q]["pe2"] = (UB + LB)/2 # point estimate 2, center of confidence interval # type: ignore[misc]
 
-        coverage[rep][q] = (LB <= TTE_true) and (TTE_true <= UB) # is the true TTE contained in the confidence interval?
+        coverage1[rep][q] = (LB <= TTE_true) and (TTE_true <= UB) # is the true TTE contained in the confidence interval?
 
-for rep in range(r_graph):
-    print(f"rep = {rep}")
-    for nu in nus:
-        q = (n*p)/nu
-        print(f"nu = {nu}, coverage = {coverage[rep][q]}: TTE = {round(TTE_true_list[rep],4)} is in [{round(bootstrap_res[rep][q]["LB"],5)},{round(bootstrap_res[rep][q]["UB"],5)}]")
-        # print(f"TTE_hat_dict length: {len(TTE_hat_dict[rep][q])}")
-        # print(f"TTE_hat_dict_Cl length: {len(TTE_hat_dict_Cl[rep][q])}")
-        # print(f"bootstrap_res number of keys: {len(bootstrap_res[rep][q])}")
-    print()
+        # NO BOOTSTRAP, USE CLUSTER-LEVEL ESTIMATES AS EMPIRICAL DIST
+        LB = np.percentile(coarse_estimates, 100*alpha/2) # lower bound for (1-alpha)*100 confidence interval 
+        UB = np.percentile(coarse_estimates, 100*(1-(alpha/2))) # upper bound for (1-alpha)*100 confidence interval
 
-data = {"pe1_TTE_hat": TTE_hat_dict,
+        bootstrap_res2[rep][q]["ed"] = coarse_estimates # for plotting later # type: ignore[misc]
+        bootstrap_res2[rep][q]["var"] = np.var(coarse_estimates, ddof=1) # use sample variance of empirical distribution as our variance estimate # type: ignore[misc]
+        bootstrap_res2[rep][q]["LB"] = LB # type: ignore[misc]
+        bootstrap_res2[rep][q]["UB"] = UB # type: ignore[misc]
+        bootstrap_res2[rep][q]["pe2"] = (UB + LB)/2 # point estimate 2, center of confidence interval # type: ignore[misc]
+
+        coverage2[rep][q] = (LB <= TTE_true) and (TTE_true <= UB) # is the true TTE contained in the confidence interval?
+
+frac_true1 = {q: np.mean([coverage1[rep][q] for rep in coverage1]) for q in qs}
+frac_true2 = {q: np.mean([coverage2[rep][q] for rep in coverage2]) for q in qs}
+print(f"Coverage (out of {r_graph} graphs)")
+for key in frac_true1:
+    print(f"q = {np.round(key,3):.3f}: (1) {frac_true1[key]}, (2) {frac_true2[key]}")
+
+data = {"TTE_true" : TTE_true_list,
+        "pe1_TTE_hat": TTE_hat_dict,
         "pe1_bias": Bias_dict,
         "cluster_TTE_hat": TTE_hat_dict_Cl,
         "cluster_bias": Bias_dict_Cl,
-        "bootstrap_res": bootstrap_res,
-        "coverage": coverage}
+        "bootstrap_res1": bootstrap_res1,
+        "coverage1": coverage1,
+        "bootstrap_res2": bootstrap_res2,
+        "coverage2": coverage2}
 file = open("data.pkl", "wb")
 pickle.dump((data), file)
 file.close()
