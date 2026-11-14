@@ -144,9 +144,7 @@ def complete_coeffs(beta, nu, k):
     return L
 
 # From AISTATS paper, modified slightly to account for disconnected graph components
-# TODO: double check that modification is necessary
-# TODO: need to determine if there are issues here with directed graph (and self-loops) leading to a nonsymmetric matrix, and what that does to Laplacian
-def homophily_effects(G):
+def homophily_effects(G, numComponents = 1):
     '''
     Returns vectors of (normalized) homophily effects as described in the Ugander/Yin paper
         G = adjacency list representation of graph
@@ -154,11 +152,12 @@ def homophily_effects(G):
     n = G.shape[0]
     degrees = G.sum(axis=0)
     normalized_laplacian = (-G/degrees).tocsr()
-    normalized_laplacian[range(n),range(n)] = 1
+    normalized_laplacian[range(n),range(n)] += 1
 
-    _, eigvecs_s = scipy.sparse.linalg.eigs(normalized_laplacian,k=2,which='SM') # type: ignore[misc]
+    eigvals, eigvecs_s = scipy.sparse.linalg.eigs(normalized_laplacian,k=numComponents+1,which='SM') # type: ignore[misc]
+    order = np.argsort(np.abs(eigvals))
 
-    h = eigvecs_s[:,1].real
+    h = eigvecs_s[:,order[numComponents]].real
 
     h = 2*(h-min(h))/(max(h)-min(h)) - 1   # adjust so smallest value is -1 and largest value is 1
 
