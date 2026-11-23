@@ -8,13 +8,13 @@ startTime = time.time()
 rng = np.random.default_rng(2727)
 
 # Parameters
-betas = [2]  # Polynomial degree for outcome model
-budgets = [0.025, 0.125, 0.25]  # Treatment budget proportion p [0.025, 0.05, 0.1, 0.125, 0.15, 0.2, 0.25]
+betas = [1,2]  # Polynomial degree for outcome model
+budgets = [0.015, 0.025, 0.05, 0.1, 0.125, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4]  # Treatment budget proportion p [0.025, 0.05, 0.1, 0.125, 0.15, 0.2, 0.25]
 qs = ["p", "2p", "1"] # 2nd stage treatment prob options: "p" means q = p, "2p" means q = 2p, "1" means q = 1
-r = 100  # Number of randomized design replications 
+r = 1000  # Number of randomized design replications 
 
 # Network Parameters
-sizes = [10000] # graph sizes i.e population sizes
+sizes = [2500, 5000, 7500, 10000, 12500, 15000] # graph sizes i.e population sizes
 clusterSize = 10 # number of units per fine cluster 
 clusterSizeBig = 100 # number of units per coarse cluster
 # TODO: would need to make these probabilities a function of n to keep a constant degree across graphs
@@ -142,7 +142,7 @@ for beta in betas:
             Cl_coarse.append(list(range(k+add,k+add+clusterSizeBig)))
             add+=clusterSizeBig-1
 
-        for p in budgets: # (nu_str, tte_hat, e_tte_hat_given_u, Y, U)
+        for p in budgets: 
             K = np.linspace(0,int(n*p),beta+1,dtype=int)
             # TODO: test if parallelization here actually speeds up computation time
             for (nu_str,nu,TTE_hat,E_given_U,Y,U) in Parallel(n_jobs=3, verbose=5)(delayed(lambda nu_str : estimate_two_stage(n,fY,Cl_fine,r,nu_str,K,beta,p))(nu_str) for nu_str in qs): # type: ignore[misc]
